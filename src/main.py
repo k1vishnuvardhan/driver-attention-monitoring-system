@@ -19,6 +19,7 @@ from dashboard import DashboardSnapshot, render_dashboard
 
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+MOUTH = [78, 81, 13, 308, 14, 311]
 
 FRAME_WIDTH = 960
 FRAME_HEIGHT = 540
@@ -26,6 +27,8 @@ MIN_BLINK_FRAMES = 2
 WARNING_FRAMES = 15
 DROWSY_FRAMES = 30
 CALIBRATION_FRAMES = 45
+YAWN_FRAMES = 12
+MAR_THRESHOLD = 0.60
 
 GREEN = (60, 179, 113)
 ALARM_PATH = Path(__file__).resolve().parent.parent / "assets" / "alarm.wav"
@@ -53,6 +56,9 @@ class DetectorState:
     saved_closed: int = 0
     last_capture_label: str = ""
     last_capture_at: float = 0.0
+    mar_value: float = 0.0
+    yawn_frames: int = 0
+    yawn_alerts: int = 0
 
 
 @dataclass
@@ -76,6 +82,7 @@ class OpenCvLandmarkResult:
     left_eye_crop: np.ndarray[Any, Any] | None = None
     right_eye_crop: np.ndarray[Any, Any] | None = None
     score: float = 0.0
+    mouth_points: list[tuple[int, int]] | None = None
 
 
 @dataclass
@@ -106,6 +113,15 @@ def calculate_ear(eye_points: list[tuple[int, int]]) -> float:
     return (vertical_1 + vertical_2) / (2.0 * horizontal)
 
 
+def calculate_mar(mouth_points: list[tuple[int, int]]) -> float:
+    vertical_1 = euclidean_distance(mouth_points[1], mouth_points[5])
+    vertical_2 = euclidean_distance(mouth_points[2], mouth_points[4])
+    horizontal = euclidean_distance(mouth_points[0], mouth_points[3])
+    if horizontal == 0:
+        return 0.0
+    return (vertical_1 + vertical_2) / (2.0 * horizontal)
+
+
 def eye_points_from_box(x: int, y: int, width: int, height: int) -> list[tuple[int, int]]:
     return [
         (x, y + height // 2),
@@ -131,11 +147,23 @@ def extract_eye_points(face_landmarks, frame_width: int, frame_height: int) -> t
     return left_eye, right_eye
 
 
+def extract_mouth_points(face_landmarks, frame_width: int, frame_height: int) -> list[tuple[int, int]]:
+    landmark_items = face_landmarks.landmark if hasattr(face_landmarks, "landmark") else face_landmarks
+    return [to_pixel(landmark_items[index], frame_width, frame_height) for index in MOUTH]
+
+
 def draw_eye_outline(frame, eye_points: list[tuple[int, int]], color: tuple[int, int, int]) -> None:
     for point in eye_points:
         cv2.circle(frame, point, 2, color, -1)
     contour = np.array(eye_points, dtype=np.int32)
     cv2.polylines(frame, [cv2.convexHull(contour)], True, color, 1)
+
+
+def draw_mouth_outline(frame, mouth_points: list[tuple[int, int]], color: tuple[int, int, int]) -> None:
+    contour = np.array(mouth_points, dtype=np.int32)
+    cv2.polylines(frame, [cv2.convexHull(contour)], True, color, 1)
+    for point in mouth_points:
+        cv2.circle(frame, point, 2, color, -1)
 
 
 def start_alarm() -> None:
@@ -175,6 +203,16 @@ def update_state(state: DetectorState, score_value: float) -> None:
         if state.alarm_on:
             stop_alarm()
             state.alarm_on = False
+
+
+def update_mar_state(state: DetectorState, mar_value: float) -> None:
+    state.mar_value = mar_value
+    if mar_value > MAR_THRESHOLD:
+        state.yawn_frames += 1
+        if state.yawn_frames == YAWN_FRAMES:
+            state.yawn_alerts += 1
+    else:
+        state.yawn_frames = 0
         return
 
     if score_value < state.threshold_value:
@@ -395,12 +433,19 @@ def process_landmarks_with_haar(runner: dict[str, Any], frame_rgb) -> OpenCvLand
     right_crop = crop_box(frame_bgr, right_box[0], right_box[1], right_box[2], right_box[3])
     score = (estimate_eye_openness(left_crop) + estimate_eye_openness(right_crop)) / 2.0
 
+    mouth_width = max(width // 2, 1)
+    mouth_height = max(height // 6, 1)
+    mouth_x = x + (width - mouth_width) // 2
+    mouth_y = y + int(height * 0.68)
+    mouth_points = eye_points_from_box(mouth_x, mouth_y, mouth_width, mouth_height)
+
     return OpenCvLandmarkResult(
         left_eye=left_eye,
         right_eye=right_eye,
         left_eye_crop=left_crop,
         right_eye_crop=right_crop,
         score=score,
+        mouth_points=mouth_points,
     )
 
 
@@ -529,11 +574,29 @@ def resolve_score_value(
     return (left_ear + right_ear) / 2.0
 
 
+def resolve_mar_value(
+    integration: IntegrationContext,
+    results: FaceMeshResult | OpenCvLandmarkResult,
+    mouth_points: list[tuple[int, int]],
+) -> float:
+    if integration.detector_module:
+        external_calculate_mar = getattr(integration.detector_module, "calculate_mar", None)
+        if callable(external_calculate_mar):
+            external_value = call_with_supported_args(external_calculate_mar, mouth_points=mouth_points)
+            if isinstance(external_value, (int, float)):
+                return float(external_value)
+    return calculate_mar(mouth_points)
+
+
 def build_snapshot(state: DetectorState, fps: float, integration: IntegrationContext) -> DashboardSnapshot:
     return DashboardSnapshot(
         status=state.status,
         score_value=state.current_score,
         threshold_value=state.threshold_value,
+        mar_value=state.mar_value,
+        mar_threshold=MAR_THRESHOLD,
+        yawn_frames=state.yawn_frames,
+        yawn_alerts=state.yawn_alerts,
         closed_frames=state.closed_frames,
         blink_count=state.blink_count,
         drowsy_alerts=state.drowsy_alerts,
@@ -552,6 +615,7 @@ def reset_face_state(state: DetectorState) -> None:
     state.status = "NO FACE"
     state.closed_frames = 0
     state.blink_frames = 0
+    state.yawn_frames = 0
     if state.alarm_on:
         stop_alarm()
         state.alarm_on = False
@@ -655,7 +719,11 @@ def main() -> None:
                         face_landmarks=None,
                     )
                     score_value = resolve_score_value(integration, results, left_eye, right_eye)
+                    mouth_points = results.mouth_points if results.mouth_points is not None else []
                     update_state(state, score_value)
+                    if mouth_points:
+                        update_mar_state(state, resolve_mar_value(integration, results, mouth_points))
+                        draw_mouth_outline(frame, mouth_points, (0, 255, 255))
                     draw_eye_outline(frame, left_eye, GREEN)
                     draw_eye_outline(frame, right_eye, GREEN)
                 else:
@@ -673,10 +741,13 @@ def main() -> None:
                     results=results,
                     face_landmarks=face_landmarks,
                 )
+                mouth_points = extract_mouth_points(face_landmarks, frame.shape[1], frame.shape[0])
                 score_value = resolve_score_value(integration, results, left_eye, right_eye)
                 update_state(state, score_value)
+                update_mar_state(state, resolve_mar_value(integration, results, mouth_points))
                 draw_eye_outline(frame, left_eye, GREEN)
                 draw_eye_outline(frame, right_eye, GREEN)
+                draw_mouth_outline(frame, mouth_points, (0, 255, 255))
             else:
                 reset_face_state(state)
 

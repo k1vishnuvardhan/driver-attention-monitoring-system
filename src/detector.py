@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+from pathlib import Path
 
 
 # Eye and mouth landmark indexes from MediaPipe Face Mesh.
@@ -11,6 +12,7 @@ MOUTH = [78, 81, 13, 308, 14, 311]
 # Thresholds for detecting closed eyes and yawning.
 EAR_THRESHOLD = 0.25
 MAR_THRESHOLD = 0.6
+FACE_LANDMARKER_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "face_landmarker.task"
 
 
 def euclidean_distance(point1, point2):
@@ -31,21 +33,52 @@ def get_points(face_landmarks, landmark_indexes, frame_width, frame_height):
     return points
 
 
-def calculate_ear(eye_points):
+def calculate_ear(
+    eye_points=None,
+    left_eye=None,
+    right_eye=None,
+    left_eye_points=None,
+    right_eye_points=None,
+):
     """
     Calculate Eye Aspect Ratio.
 
-    Formula:
-    EAR = (vertical distance 1 + vertical distance 2) / (2 * horizontal distance)
+    This function supports both:
+    - a single eye passed as `eye_points`
+    - both eyes passed as `left_eye` and `right_eye`
+
+    When both eyes are provided, it returns the average EAR so it is compatible
+    with `src/main.py`.
     """
+    resolved_left = left_eye if left_eye is not None else left_eye_points
+    resolved_right = right_eye if right_eye is not None else right_eye_points
+
+    if resolved_left is not None and resolved_right is not None:
+        left_value = calculate_ear(eye_points=resolved_left)
+        right_value = calculate_ear(eye_points=resolved_right)
+        return (left_value + right_value) / 2.0
+
+    if eye_points is None:
+        return 0.0
+
     vertical_1 = euclidean_distance(eye_points[1], eye_points[5])
     vertical_2 = euclidean_distance(eye_points[2], eye_points[4])
     horizontal = euclidean_distance(eye_points[0], eye_points[3])
 
     if horizontal == 0:
-        return 0
+        return 0.0
 
     return (vertical_1 + vertical_2) / (2.0 * horizontal)
+
+
+def compute_ear(left_eye, right_eye):
+    """Return the average EAR from both eyes."""
+    return calculate_ear(left_eye=left_eye, right_eye=right_eye)
+
+
+def eye_aspect_ratio(left_eye, right_eye):
+    """Alias kept for compatibility with other modules."""
+    return compute_ear(left_eye, right_eye)
 
 
 def calculate_mar(mouth_points):
@@ -71,15 +104,44 @@ def draw_landmarks(frame, points, color):
         cv2.circle(frame, point, 3, color, -1)
 
 
-def main():
-    # Start MediaPipe Face Mesh. It detects 468 face landmarks.
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+def create_face_backend():
+    """Create a MediaPipe backend that works with the current environment."""
+    if FACE_LANDMARKER_MODEL_PATH.exists():
+        from mediapipe.tasks.python import BaseOptions
+        from mediapipe.tasks.python import vision
+
+        options = vision.FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(FACE_LANDMARKER_MODEL_PATH)),
+            running_mode=vision.RunningMode.VIDEO,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        return ("tasks", vision.FaceLandmarker.create_from_options(options))
+
+    raise RuntimeError(
+        "No MediaPipe face landmark backend is available. "
+        "Expected models/face_landmarker.task for the MediaPipe Tasks Face Landmarker."
     )
+
+
+def process_face_backend(backend_kind, backend, rgb_frame):
+    """Run face landmark detection for the MediaPipe Tasks backend."""
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    return backend.detect_for_video(mp_image, int(cv2.getTickCount() / cv2.getTickFrequency() * 1000))
+
+
+def extract_face_landmarks(results, backend_kind):
+    """Normalize landmark results from the MediaPipe Tasks backend."""
+    face_landmarks_list = getattr(results, "face_landmarks", None)
+    if face_landmarks_list:
+        return face_landmarks_list[0]
+    return None
+
+
+def main():
+    backend_kind, backend = create_face_backend()
 
     # Open the default webcam.
     cap = cv2.VideoCapture(0)
@@ -97,15 +159,15 @@ def main():
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Run Face Mesh landmark detection.
-        results = face_mesh.process(rgb_frame)
+        results = process_face_backend(backend_kind, backend, rgb_frame)
 
         eyes_status = "No Face Detected"
         yawning_status = ""
         eyes_color = (0, 255, 255)
         yawning_color = (255, 255, 255)
 
-        if results.multi_face_landmarks:
-            face_landmarks = results.multi_face_landmarks[0]
+        face_landmarks = extract_face_landmarks(results, backend_kind)
+        if face_landmarks is not None:
 
             # Get eye and mouth landmark positions in pixel coordinates.
             left_eye_points = get_points(
@@ -122,9 +184,7 @@ def main():
             draw_landmarks(frame, mouth_points, (0, 0, 255))
 
             # Calculate average EAR from both eyes.
-            left_ear = calculate_ear(left_eye_points)
-            right_ear = calculate_ear(right_eye_points)
-            average_ear = (left_ear + right_ear) / 2.0
+            average_ear = compute_ear(left_eye_points, right_eye_points)
 
             # Calculate MAR for yawning detection.
             mar = calculate_mar(mouth_points)
@@ -194,7 +254,9 @@ def main():
 
     # Release the webcam and close the display window.
     cap.release()
-    face_mesh.close()
+    close_method = getattr(backend, "close", None)
+    if callable(close_method):
+        close_method()
     cv2.destroyAllWindows()
 
 

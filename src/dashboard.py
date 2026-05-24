@@ -19,6 +19,10 @@ class DashboardSnapshot:
     status: str
     score_value: float
     threshold_value: float
+    mar_value: float
+    mar_threshold: float
+    yawn_frames: int
+    yawn_alerts: int
     closed_frames: int
     blink_count: int
     drowsy_alerts: int
@@ -46,9 +50,9 @@ def render_dashboard(frame, snapshot: DashboardSnapshot) -> None:
     panel_color = _panel_color(snapshot.status)
 
     overlay = frame.copy()
-    cv2.rectangle(overlay, (15, 15), (440, 295), panel_color, -1)
+    cv2.rectangle(overlay, (15, 15), (440, 365), panel_color, -1)
     cv2.addWeighted(overlay, 0.18, frame, 0.82, 0, frame)
-    cv2.rectangle(frame, (15, 15), (440, 295), panel_color, 2)
+    cv2.rectangle(frame, (15, 15), (440, 365), panel_color, 2)
 
     session_seconds = int(time.time() - snapshot.started_at)
     capture_text = snapshot.capture_label if snapshot.capture_label else "-"
@@ -57,6 +61,10 @@ def render_dashboard(frame, snapshot: DashboardSnapshot) -> None:
         f"Status: {snapshot.status}",
         f"Score: {snapshot.score_value:.3f}",
         f"Threshold: {snapshot.threshold_value:.3f}",
+        f"MAR: {snapshot.mar_value:.3f}",
+        f"MAR Threshold: {snapshot.mar_threshold:.3f}",
+        f"Yawn Frames: {snapshot.yawn_frames}",
+        f"Yawn Alerts: {snapshot.yawn_alerts}",
         f"Closed Frames: {snapshot.closed_frames}",
         f"Blinks: {snapshot.blink_count}",
         f"Alerts: {snapshot.drowsy_alerts}",
