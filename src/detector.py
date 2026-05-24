@@ -13,6 +13,20 @@ EAR_THRESHOLD = 0.25
 MAR_THRESHOLD = 0.6
 
 
+def open_webcam():
+    """Open the first working webcam."""
+    for camera_index in [0, 1, 2]:
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+
+        if cap.isOpened():
+            print(f"Webcam opened using camera index {camera_index}.")
+            return cap
+
+        cap.release()
+
+    return None
+
+
 def euclidean_distance(point1, point2):
     """Return the straight-line distance between two points."""
     return np.linalg.norm(np.array(point1) - np.array(point2))
@@ -71,9 +85,36 @@ def draw_landmarks(frame, points, color):
         cv2.circle(frame, point, 3, color, -1)
 
 
+def draw_full_face_mesh(frame, face_landmarks, mp_face_mesh, mp_drawing, mp_styles):
+    """Draw the complete MediaPipe face mesh on the frame."""
+    mp_drawing.draw_landmarks(
+        image=frame,
+        landmark_list=face_landmarks,
+        connections=mp_face_mesh.FACEMESH_TESSELATION,
+        landmark_drawing_spec=None,
+        connection_drawing_spec=mp_styles.get_default_face_mesh_tesselation_style(),
+    )
+    mp_drawing.draw_landmarks(
+        image=frame,
+        landmark_list=face_landmarks,
+        connections=mp_face_mesh.FACEMESH_CONTOURS,
+        landmark_drawing_spec=None,
+        connection_drawing_spec=mp_styles.get_default_face_mesh_contours_style(),
+    )
+    mp_drawing.draw_landmarks(
+        image=frame,
+        landmark_list=face_landmarks,
+        connections=mp_face_mesh.FACEMESH_IRISES,
+        landmark_drawing_spec=None,
+        connection_drawing_spec=mp_styles.get_default_face_mesh_iris_connections_style(),
+    )
+
+
 def main():
     # Start MediaPipe Face Mesh. It detects 468 face landmarks.
     mp_face_mesh = mp.solutions.face_mesh
+    mp_drawing = mp.solutions.drawing_utils
+    mp_styles = mp.solutions.drawing_styles
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
         refine_landmarks=True,
@@ -81,15 +122,23 @@ def main():
         min_tracking_confidence=0.5,
     )
 
-    # Open the default webcam.
-    cap = cv2.VideoCapture(0)
+    # Open the webcam.
+    cap = open_webcam()
+
+    if cap is None:
+        print("Error: Could not open webcam.")
+        return
 
     while True:
         # Read a frame from the webcam.
         ret, frame = cap.read()
 
         if not ret:
+            print("Error: Could not read frame.")
             break
+
+        # Flip the frame so it looks like a mirror.
+        frame = cv2.flip(frame, 1)
 
         frame_height, frame_width, _ = frame.shape
 
@@ -107,6 +156,11 @@ def main():
         if results.multi_face_landmarks:
             face_landmarks = results.multi_face_landmarks[0]
 
+            # Draw the full facial mesh instead of only the eye and mouth points.
+            draw_full_face_mesh(
+                frame, face_landmarks, mp_face_mesh, mp_drawing, mp_styles
+            )
+
             # Get eye and mouth landmark positions in pixel coordinates.
             left_eye_points = get_points(
                 face_landmarks, LEFT_EYE, frame_width, frame_height
@@ -116,7 +170,7 @@ def main():
             )
             mouth_points = get_points(face_landmarks, MOUTH, frame_width, frame_height)
 
-            # Draw eye and mouth landmarks for visualization.
+            # Highlight the landmarks used for EAR and MAR calculations.
             draw_landmarks(frame, left_eye_points, (0, 255, 0))
             draw_landmarks(frame, right_eye_points, (255, 0, 0))
             draw_landmarks(frame, mouth_points, (0, 0, 255))
