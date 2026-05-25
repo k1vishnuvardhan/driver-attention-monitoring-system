@@ -9,6 +9,10 @@ import inspect
 import math
 import time
 import winsound
+import json
+import threading
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse
 
 import cv2
 import mediapipe as mp
@@ -31,11 +35,188 @@ YAWN_FRAMES = 12
 MAR_THRESHOLD = 0.60
 
 GREEN = (60, 179, 113)
+CYAN = (255, 220, 80)
+AMBER = (0, 191, 255)
+RED = (60, 70, 255)
 ALARM_PATH = Path(__file__).resolve().parent.parent / "assets" / "alarm.wav"
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
 OPEN_DATA_DIR = DATA_ROOT / "open"
 CLOSED_DATA_DIR = DATA_ROOT / "closed"
 FACE_LANDMARKER_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "face_landmarker.task"
+
+
+class TelemetryState:
+    def __init__(self):
+        self.latest_frame = None
+        self.latest_snapshot = None
+        self.lock = threading.Lock()
+
+global_telemetry = TelemetryState()
+
+
+global_recalibrate_trigger = False
+global_save_open_trigger = False
+global_save_closed_trigger = False
+global_camera_switch_request: int | None = None
+
+
+@dataclass
+class CameraSource:
+    index: int
+    label: str
+
+
+def create_video_capture(camera_index: int) -> cv2.VideoCapture:
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(camera_index)
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    return cap
+
+
+def list_available_cameras(max_cameras: int = 6) -> list[CameraSource]:
+    sources: list[CameraSource] = []
+    for index in range(max_cameras):
+        cap = create_video_capture(index)
+        if cap.isOpened():
+            sources.append(CameraSource(index=index, label=f"Camera {index}"))
+        cap.release()
+    return sources
+
+
+def open_best_available_camera(preferred_index: int = 0) -> tuple[cv2.VideoCapture, int]:
+    preferred_capture = create_video_capture(preferred_index)
+    if preferred_capture.isOpened():
+        return preferred_capture, preferred_index
+
+    preferred_capture.release()
+    for source in list_available_cameras():
+        if source.index == preferred_index:
+            continue
+        fallback_capture = create_video_capture(source.index)
+        if fallback_capture.isOpened():
+            return fallback_capture, source.index
+        fallback_capture.release()
+
+    return preferred_capture, preferred_index
+
+
+class TelemetryHTTPHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Mute logging output in console
+        pass
+
+    def do_GET(self):
+        global global_recalibrate_trigger, global_save_open_trigger, global_save_closed_trigger, global_camera_switch_request
+        parsed_url = urlparse(self.path)
+        request_path = parsed_url.path
+        query_items = dict(item.split("=", 1) for item in parsed_url.query.split("&") if "=" in item)
+        
+        if request_path == '/video_feed':
+            self.send_response(200)
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            while True:
+                with global_telemetry.lock:
+                    frame_bytes = global_telemetry.latest_frame
+                
+                if frame_bytes:
+                    try:
+                        self.wfile.write(b'--frame\r\n')
+                        self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                        self.wfile.write(f'Content-Length: {len(frame_bytes)}\r\n\r\n'.encode('utf-8'))
+                        self.wfile.write(frame_bytes)
+                        self.wfile.write(b'\r\n')
+                    except Exception:
+                        break
+                
+                # Stream frames at ~30 FPS
+                time.sleep(0.033)
+                
+        elif request_path == '/telemetry':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            with global_telemetry.lock:
+                snap = global_telemetry.latest_snapshot
+            
+            if snap:
+                data = {
+                    "status": snap.status,
+                    "score_value": snap.score_value,
+                    "threshold_value": snap.threshold_value,
+                    "mar_value": snap.mar_value,
+                    "mar_threshold": snap.mar_threshold,
+                    "yawn_frames": snap.yawn_frames,
+                    "yawn_alerts": snap.yawn_alerts,
+                    "closed_frames": snap.closed_frames,
+                    "blink_count": snap.blink_count,
+                    "drowsy_alerts": snap.drowsy_alerts,
+                    "fps": snap.fps,
+                    "integration_mode": snap.integration_mode,
+                    "pose_label": snap.pose_label,
+                    "face_detected": snap.face_detected,
+                    "camera_index": getattr(snap, "camera_index", 0),
+                    "camera_name": getattr(snap, "camera_name", "Camera 0"),
+                }
+                self.wfile.write(json.dumps(data).encode('utf-8'))
+            else:
+                self.wfile.write(b'{}')
+
+        elif request_path == '/cameras':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            cameras = [{"index": source.index, "label": source.label} for source in list_available_cameras()]
+            self.wfile.write(json.dumps({"cameras": cameras}).encode('utf-8'))
+                
+        elif request_path == '/recalibrate':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            global_recalibrate_trigger = True
+            self.wfile.write(b'{"status":"recalibrated"}')
+            
+        elif request_path == '/save_open':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            global_save_open_trigger = True
+            self.wfile.write(b'{"status":"save_open_queued"}')
+            
+        elif request_path == '/save_closed':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            global_save_closed_trigger = True
+            self.wfile.write(b'{"status":"save_closed_queued"}')
+
+        elif request_path == '/select_camera':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            try:
+                camera_index = int(query_items.get("index", "0"))
+                global_camera_switch_request = camera_index
+                self.wfile.write(json.dumps({"status": "camera_switch_queued", "camera_index": camera_index}).encode('utf-8'))
+            except ValueError:
+                self.wfile.write(b'{"status":"invalid_camera_index"}')
+            
+        else:
+            self.send_response(404)
+            self.end_headers()
 
 
 @dataclass
@@ -59,6 +240,10 @@ class DetectorState:
     mar_value: float = 0.0
     yawn_frames: int = 0
     yawn_alerts: int = 0
+    pose_label: str = "CENTER"
+    face_detected: bool = False
+    camera_index: int = 0
+    camera_name: str = "Camera 0"
 
 
 @dataclass
@@ -83,6 +268,7 @@ class OpenCvLandmarkResult:
     right_eye_crop: np.ndarray[Any, Any] | None = None
     score: float = 0.0
     mouth_points: list[tuple[int, int]] | None = None
+    face_box: tuple[int, int, int, int] | None = None
 
 
 @dataclass
@@ -102,6 +288,10 @@ def euclidean_distance(point_a: tuple[int, int], point_b: tuple[int, int]) -> fl
 
 def to_pixel(landmark, frame_width: int, frame_height: int) -> tuple[int, int]:
     return int(landmark.x * frame_width), int(landmark.y * frame_height)
+
+
+def to_uniform(landmark) -> tuple[float, float]:
+    return float(landmark.x * 1000.0), float(landmark.y * 1000.0)
 
 
 def calculate_ear(eye_points: list[tuple[int, int]]) -> float:
@@ -152,6 +342,19 @@ def extract_mouth_points(face_landmarks, frame_width: int, frame_height: int) ->
     return [to_pixel(landmark_items[index], frame_width, frame_height) for index in MOUTH]
 
 
+def extract_eye_points_uniform(face_landmarks) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    landmark_items = face_landmarks.landmark if hasattr(face_landmarks, "landmark") else face_landmarks
+    left_eye = [to_uniform(landmark_items[index]) for index in LEFT_EYE]
+    right_eye = [to_uniform(landmark_items[index]) for index in RIGHT_EYE]
+    return left_eye, right_eye
+
+
+def extract_mouth_points_uniform(face_landmarks) -> list[tuple[float, float]]:
+    landmark_items = face_landmarks.landmark if hasattr(face_landmarks, "landmark") else face_landmarks
+    return [to_uniform(landmark_items[index]) for index in MOUTH]
+
+
+
 def draw_eye_outline(frame, eye_points: list[tuple[int, int]], color: tuple[int, int, int]) -> None:
     for point in eye_points:
         cv2.circle(frame, point, 2, color, -1)
@@ -164,6 +367,63 @@ def draw_mouth_outline(frame, mouth_points: list[tuple[int, int]], color: tuple[
     cv2.polylines(frame, [cv2.convexHull(contour)], True, color, 1)
     for point in mouth_points:
         cv2.circle(frame, point, 2, color, -1)
+
+
+def draw_face_box(frame, face_box: tuple[int, int, int, int], color: tuple[int, int, int]) -> None:
+    x, y, width, height = face_box
+    cv2.rectangle(frame, (x, y), (x + width, y + height), color, 2)
+
+
+def draw_face_mesh(frame, face_landmarks) -> None:
+    face_mesh_api = getattr(getattr(mp, "solutions", None), "face_mesh", None)
+    if face_mesh_api is None:
+        return
+
+    landmark_items = face_landmarks.landmark if hasattr(face_landmarks, "landmark") else face_landmarks
+    frame_height, frame_width = frame.shape[:2]
+    for start_index, end_index in face_mesh_api.FACEMESH_TESSELATION:
+        start_point = to_pixel(landmark_items[start_index], frame_width, frame_height)
+        end_point = to_pixel(landmark_items[end_index], frame_width, frame_height)
+        cv2.line(frame, start_point, end_point, CYAN, 1, cv2.LINE_AA)
+
+
+def compute_face_box(face_landmarks, frame_width: int, frame_height: int) -> tuple[int, int, int, int]:
+    landmark_items = face_landmarks.landmark if hasattr(face_landmarks, "landmark") else face_landmarks
+    x_values = [int(landmark.x * frame_width) for landmark in landmark_items]
+    y_values = [int(landmark.y * frame_height) for landmark in landmark_items]
+    min_x = max(min(x_values) - 10, 0)
+    min_y = max(min(y_values) - 10, 0)
+    max_x = min(max(x_values) + 10, frame_width - 1)
+    max_y = min(max(y_values) + 10, frame_height - 1)
+    return min_x, min_y, max(max_x - min_x, 1), max(max_y - min_y, 1)
+
+
+def estimate_pose_label(face_landmarks) -> str:
+    landmark_items = face_landmarks.landmark if hasattr(face_landmarks, "landmark") else face_landmarks
+    nose = landmark_items[4]
+    left = landmark_items[234]
+    right = landmark_items[454]
+    top = landmark_items[10]
+    bottom = landmark_items[152]
+
+    horizontal_span = max(right.x - left.x, 1e-6)
+    vertical_span = max(bottom.y - top.y, 1e-6)
+    horizontal_ratio = (nose.x - left.x) / horizontal_span
+    vertical_ratio = (nose.y - top.y) / vertical_span
+
+    if vertical_ratio > 0.60:
+        return "LOOKING DOWN"
+    if horizontal_ratio < 0.38:
+        return "LOOKING RIGHT"
+    if horizontal_ratio > 0.62:
+        return "LOOKING LEFT"
+    return "CENTER"
+
+
+def annotate_tracking_label(frame, label: str, face_box: tuple[int, int, int, int], color: tuple[int, int, int]) -> None:
+    x, y, _, _ = face_box
+    text_y = max(y - 12, 20)
+    cv2.putText(frame, f"TRACKING: {label}", (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
 
 
 def start_alarm() -> None:
@@ -203,16 +463,6 @@ def update_state(state: DetectorState, score_value: float) -> None:
         if state.alarm_on:
             stop_alarm()
             state.alarm_on = False
-
-
-def update_mar_state(state: DetectorState, mar_value: float) -> None:
-    state.mar_value = mar_value
-    if mar_value > MAR_THRESHOLD:
-        state.yawn_frames += 1
-        if state.yawn_frames == YAWN_FRAMES:
-            state.yawn_alerts += 1
-    else:
-        state.yawn_frames = 0
         return
 
     if score_value < state.threshold_value:
@@ -243,6 +493,16 @@ def update_mar_state(state: DetectorState, mar_value: float) -> None:
             state.alarm_on = False
 
 
+def update_mar_state(state: DetectorState, mar_value: float) -> None:
+    state.mar_value = mar_value
+    if mar_value > MAR_THRESHOLD:
+        state.yawn_frames += 1
+        if state.yawn_frames == YAWN_FRAMES:
+            state.yawn_alerts += 1
+    else:
+        state.yawn_frames = 0
+
+
 def load_optional_module(*names: str) -> ModuleType | None:
     for name in names:
         try:
@@ -259,6 +519,10 @@ def call_with_supported_args(func, **kwargs):
 
 
 def load_integration_context() -> IntegrationContext:
+    use_external_modules = False
+    if not use_external_modules:
+        return IntegrationContext(mode="internal")
+
     landmark_module = load_optional_module("landmarks", "src.landmarks")
     detector_module = load_optional_module("detector", "src.detector")
 
@@ -301,9 +565,9 @@ def create_internal_landmark_backend() -> LandmarkBackend:
             base_options=BaseOptions(model_asset_path=str(FACE_LANDMARKER_MODEL_PATH)),
             running_mode=vision.RunningMode.VIDEO,
             num_faces=1,
-            min_face_detection_confidence=0.5,
-            min_face_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_face_detection_confidence=0.3,
+            min_face_presence_confidence=0.3,
+            min_tracking_confidence=0.3,
         )
         runner = vision.FaceLandmarker.create_from_options(options)
         return LandmarkBackend(name="mediapipe.tasks.face_landmarker", runner=runner, uses_mediapipe_results=True)
@@ -327,8 +591,8 @@ def create_internal_landmark_backend() -> LandmarkBackend:
     runner = face_mesh_api.FaceMesh(
         max_num_faces=1,
         refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_detection_confidence=0.3,
+        min_tracking_confidence=0.3,
     )
     return LandmarkBackend(name="mediapipe.solutions.face_mesh", runner=runner, uses_mediapipe_results=True)
 
@@ -352,7 +616,12 @@ def close_landmark_backend(backend: LandmarkBackend) -> None:
 def process_landmarks(backend: LandmarkBackend, frame_rgb) -> FaceMeshResult | OpenCvLandmarkResult:
     if backend.name == "mediapipe.tasks.face_landmarker":
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        if not hasattr(backend, "last_timestamp"):
+            backend.last_timestamp = 0
         timestamp_ms = int(time.time() * 1000)
+        if timestamp_ms <= backend.last_timestamp:
+            timestamp_ms = backend.last_timestamp + 1
+        backend.last_timestamp = timestamp_ms
         raw_results = backend.runner.detect_for_video(mp_image, timestamp_ms)
         return FaceMeshResult(multi_face_landmarks=getattr(raw_results, "face_landmarks", None))
 
@@ -446,6 +715,7 @@ def process_landmarks_with_haar(runner: dict[str, Any], frame_rgb) -> OpenCvLand
         right_eye_crop=right_crop,
         score=score,
         mouth_points=mouth_points,
+        face_box=(x, y, width, height),
     )
 
 
@@ -608,6 +878,10 @@ def build_snapshot(state: DetectorState, fps: float, integration: IntegrationCon
         saved_open=state.saved_open,
         saved_closed=state.saved_closed,
         capture_label=state.last_capture_label,
+        pose_label=state.pose_label,
+        face_detected=state.face_detected,
+        camera_index=state.camera_index,
+        camera_name=state.camera_name,
     )
 
 
@@ -616,6 +890,8 @@ def reset_face_state(state: DetectorState) -> None:
     state.closed_frames = 0
     state.blink_frames = 0
     state.yawn_frames = 0
+    state.pose_label = "SEARCHING"
+    state.face_detected = False
     if state.alarm_on:
         stop_alarm()
         state.alarm_on = False
@@ -678,28 +954,88 @@ def handle_keypress(key_code: int, latest_results: FaceMeshResult | OpenCvLandma
 
 
 def main() -> None:
+    global global_recalibrate_trigger, global_save_open_trigger, global_save_closed_trigger, global_camera_switch_request
     ensure_data_dirs()
     integration = load_integration_context()
     landmark_backend = create_landmark_backend(integration)
     if integration.mode == "internal":
         integration.mode = landmark_backend.name
 
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    current_camera_index = 0
+    cap, current_camera_index = open_best_available_camera(current_camera_index)
 
     if not cap.isOpened():
         raise RuntimeError("Could not open the webcam.")
 
+    # Start HTTP Telemetry and Video Feed Server on port 5000 in background
+    try:
+        server = ThreadingHTTPServer(('127.0.0.1', 5000), TelemetryHTTPHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        print("AURA TELEMETRY // Backend HTTP server active on http://127.0.0.1:5000")
+    except Exception as e:
+        print(f"AURA TELEMETRY // Failed to start backend HTTP server: {e}")
+
     state = DetectorState()
+    state.camera_index = current_camera_index
+    state.camera_name = f"Camera {current_camera_index}"
     previous_time = time.time()
+    failed_read_count = 0
 
     try:
         while True:
+            if global_camera_switch_request is not None and global_camera_switch_request != current_camera_index:
+                requested_camera = global_camera_switch_request
+                replacement = create_video_capture(requested_camera)
+                if replacement.isOpened():
+                    cap.release()
+                    cap = replacement
+                    current_camera_index = requested_camera
+                    state.camera_index = current_camera_index
+                    state.camera_name = f"Camera {current_camera_index}"
+                    state.last_capture_label = f"camera_{current_camera_index}"
+                    state.last_capture_at = time.time()
+                    print(f"AURA TELEMETRY // Switched to camera source {current_camera_index}.")
+                else:
+                    replacement.release()
+                    print(f"AURA TELEMETRY // Failed to switch to camera source {requested_camera}.")
+                global_camera_switch_request = None
+
             success, frame = cap.read()
             if not success:
-                print("Failed to read from webcam.")
-                break
+                failed_read_count += 1
+                print(f"Failed to read from camera {current_camera_index}. Retry {failed_read_count}/15.")
+
+                if failed_read_count >= 5:
+                    available_sources = list_available_cameras()
+                    fallback_indices = [source.index for source in available_sources if source.index != current_camera_index]
+                    switched = False
+                    for fallback_index in fallback_indices:
+                        replacement = create_video_capture(fallback_index)
+                        if replacement.isOpened():
+                            cap.release()
+                            cap = replacement
+                            current_camera_index = fallback_index
+                            state.camera_index = current_camera_index
+                            state.camera_name = f"Camera {current_camera_index}"
+                            state.last_capture_label = f"camera_{current_camera_index}"
+                            state.last_capture_at = time.time()
+                            failed_read_count = 0
+                            switched = True
+                            print(f"AURA TELEMETRY // Auto-switched to camera source {current_camera_index}.")
+                            break
+                        replacement.release()
+
+                    if switched:
+                        continue
+
+                if failed_read_count >= 15:
+                    raise RuntimeError("Failed to read from any available camera source.")
+
+                time.sleep(0.2)
+                continue
+
+            failed_read_count = 0
 
             frame = cv2.flip(frame, 1)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -711,6 +1047,8 @@ def main() -> None:
 
             if isinstance(results, OpenCvLandmarkResult):
                 if results.left_eye and results.right_eye:
+                    state.face_detected = True
+                    state.pose_label = "CENTER (HAAR)"
                     left_eye, right_eye = resolve_eye_points(
                         integration,
                         frame=frame,
@@ -723,7 +1061,10 @@ def main() -> None:
                     update_state(state, score_value)
                     if mouth_points:
                         update_mar_state(state, resolve_mar_value(integration, results, mouth_points))
-                        draw_mouth_outline(frame, mouth_points, (0, 255, 255))
+                        draw_mouth_outline(frame, mouth_points, AMBER)
+                    if results.face_box is not None:
+                        draw_face_box(frame, results.face_box, CYAN)
+                        annotate_tracking_label(frame, state.pose_label, results.face_box, CYAN)
                     draw_eye_outline(frame, left_eye, GREEN)
                     draw_eye_outline(frame, right_eye, GREEN)
                 else:
@@ -734,6 +1075,10 @@ def main() -> None:
                     reset_face_state(state)
                     continue
                 face_landmarks = face_landmark_list[0]
+                state.face_detected = True
+                state.pose_label = estimate_pose_label(face_landmarks)
+                
+                # Get pixel coordinates solely for visual canvas overlays
                 left_eye, right_eye = resolve_eye_points(
                     integration,
                     frame=frame,
@@ -742,21 +1087,84 @@ def main() -> None:
                     face_landmarks=face_landmarks,
                 )
                 mouth_points = extract_mouth_points(face_landmarks, frame.shape[1], frame.shape[0])
-                score_value = resolve_score_value(integration, results, left_eye, right_eye)
+                
+                # Get uniform coordinates for aspect-ratio independent biometrics calculations
+                left_eye_uni, right_eye_uni = extract_eye_points_uniform(face_landmarks)
+                mouth_uni = extract_mouth_points_uniform(face_landmarks)
+                
+                # Calculate non-distorted biometric ratios
+                left_ear = calculate_ear(left_eye_uni)
+                right_ear = calculate_ear(right_eye_uni)
+                score_value = (left_ear + right_ear) / 2.0
+                mar_value = calculate_mar(mouth_uni)
+                
+                # Update state using robust ratios
                 update_state(state, score_value)
-                update_mar_state(state, resolve_mar_value(integration, results, mouth_points))
+                update_mar_state(state, mar_value)
+                
+                # Render face tracking mesh and biometrics on screen
+                face_box = compute_face_box(face_landmarks, frame.shape[1], frame.shape[0])
+                draw_face_mesh(frame, face_landmarks)
+                draw_face_box(frame, face_box, CYAN)
+                annotate_tracking_label(frame, state.pose_label, face_box, CYAN)
                 draw_eye_outline(frame, left_eye, GREEN)
                 draw_eye_outline(frame, right_eye, GREEN)
-                draw_mouth_outline(frame, mouth_points, (0, 255, 255))
+                draw_mouth_outline(frame, mouth_points, AMBER)
             else:
                 reset_face_state(state)
 
-            render_dashboard(frame, build_snapshot(state, fps, integration))
-            cv2.imshow("Driver Drowsiness Detection", frame)
+            snapshot = build_snapshot(state, fps, integration)
+            render_dashboard(frame, snapshot)
 
-            key_code = cv2.waitKey(1) & 0xFF
-            if not handle_keypress(key_code, results, state):
-                break
+            # Update live telemetry feeds for web streaming
+            try:
+                _, jpeg_data = cv2.imencode('.jpg', frame)
+                if jpeg_data is not None:
+                    with global_telemetry.lock:
+                        global_telemetry.latest_frame = jpeg_data.tobytes()
+                        global_telemetry.latest_snapshot = snapshot
+            except Exception as e:
+                pass
+
+            # Check and execute network-driven triggers from HMI
+            if global_recalibrate_trigger:
+                state.open_reference = 0.0
+                state.closed_reference = 0.0
+                state.threshold_value = 0.20
+                state.calibration_frames = 0
+                state.closed_frames = 0
+                state.blink_frames = 0
+                state.status = "CALIBRATING"
+                state.last_capture_label = "recalibrated"
+                state.last_capture_at = time.time()
+                global_recalibrate_trigger = False
+                print("AURA TELEMETRY // Recalibration trigger executed via Web HUD.")
+                
+            if global_save_open_trigger:
+                if isinstance(results, OpenCvLandmarkResult):
+                    save_eye_sample(results, "open", state)
+                global_save_open_trigger = False
+                print("AURA TELEMETRY // Save Open sample executed via Web HUD.")
+                
+            if global_save_closed_trigger:
+                if isinstance(results, OpenCvLandmarkResult):
+                    save_eye_sample(results, "closed", state)
+                global_save_closed_trigger = False
+                print("AURA TELEMETRY // Save Closed sample executed via Web HUD.")
+
+            import sys
+            if "--headless" not in sys.argv:
+                try:
+                    cv2.imshow("Driver Drowsiness Detection", frame)
+                    key_code = cv2.waitKey(1) & 0xFF
+                    if not handle_keypress(key_code, results, state):
+                        break
+                except Exception as e:
+                    print(f"GUI warning: could not render OpenCV window: {e}. Defaulting to headless mode.")
+                    sys.argv.append("--headless")
+            else:
+                # Limit CPU cycles slightly in headless mode
+                time.sleep(0.01)
     finally:
         stop_alarm()
         close_landmark_backend(landmark_backend)

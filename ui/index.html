@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Driver Attention Monitoring</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MediaPipe + OpenCV Driver Monitor</p>
+        <h1>Driver Attention Monitoring</h1>
+        <p class="topbar-copy">Live face tracking, blink counting, yawn detection, and drowsiness alerts in one view.</p>
+      </div>
+      <div id="backend-status" class="status-pill offline">Backend Offline</div>
+    </header>
+
+    <main class="dashboard">
+      <section class="panel video-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Live Processed Feed</h2>
+            <p>The stream below is the backend output with face tracking, blink, and yawn overlays.</p>
+          </div>
+          <div class="actions">
+            <select id="camera-select" class="camera-select" aria-label="Camera source">
+              <option value="0">Camera 0</option>
+            </select>
+            <button id="refresh-cameras-btn" class="btn" type="button">Refresh Cameras</button>
+            <button id="switch-camera-btn" class="btn" type="button">Switch Camera</button>
+            <button id="connect-btn" class="btn btn-primary" type="button">Connect Feed</button>
+            <button id="recalibrate-btn" class="btn" type="button">Recalibrate</button>
+          </div>
+        </div>
+
+        <div class="video-stage">
+          <img id="video-feed" alt="Live driver monitoring feed">
+          <div class="video-overlay top-left">
+            <span class="overlay-label">Tracking</span>
+            <strong id="pose-label">SEARCHING</strong>
+          </div>
+          <div class="video-overlay top-right">
+            <span class="overlay-label">Mode</span>
+            <strong id="integration-mode">-</strong>
+          </div>
+          <div class="video-overlay bottom-left">
+            <span class="overlay-label">Status</span>
+            <strong id="driver-status">WAITING</strong>
+          </div>
+          <div class="video-overlay bottom-right">
+            <span class="overlay-label">FPS</span>
+            <strong id="fps-value">0.0</strong>
+          </div>
+          <div id="feed-placeholder" class="feed-placeholder">
+            <h3>Backend not connected</h3>
+            <p>Run <code>python src/main.py</code>, then press <strong>Connect Feed</strong>.</p>
+          </div>
+        </div>
+
+        <div class="alert-strip">
+          <div id="face-lock" class="mini-pill searching">Face Searching</div>
+          <div id="attention-level" class="mini-pill neutral">Attention Unknown</div>
+          <div id="sync-text" class="sync-text">Waiting for telemetry...</div>
+        </div>
+
+        <div id="alert-banner" class="alert-banner calm">
+          <strong id="alert-title">System ready</strong>
+          <span id="alert-copy">Connect the backend to start live driver monitoring.</span>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <section class="panel metrics-panel">
+          <div class="panel-header compact">
+            <div>
+              <h2>Live Metrics</h2>
+              <p>Core biometric signals from the active camera stream.</p>
+            </div>
+          </div>
+          <div class="metric-grid">
+            <article class="metric-card">
+              <span>Blinks</span>
+              <strong id="blink-count">0</strong>
+            </article>
+            <article class="metric-card">
+              <span>Yawns</span>
+              <strong id="yawn-count">0</strong>
+            </article>
+            <article class="metric-card">
+              <span>Drowsy Alerts</span>
+              <strong id="drowsy-count">0</strong>
+            </article>
+            <article class="metric-card">
+              <span>Closed Frames</span>
+              <strong id="closed-frames">0</strong>
+            </article>
+            <article class="metric-card">
+              <span>EAR</span>
+              <strong id="ear-value">0.000</strong>
+            </article>
+            <article class="metric-card">
+              <span>MAR</span>
+              <strong id="mar-value">0.000</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel diagnostics-panel">
+          <h2>Diagnostics</h2>
+          <dl class="diagnostic-list">
+            <div>
+              <dt>EAR Threshold</dt>
+              <dd id="ear-threshold">0.000</dd>
+            </div>
+            <div>
+              <dt>MAR Threshold</dt>
+              <dd id="mar-threshold">0.000</dd>
+            </div>
+            <div>
+              <dt>Tracking State</dt>
+              <dd id="tracking-state">No face</dd>
+            </div>
+            <div>
+              <dt>Camera Source</dt>
+              <dd id="camera-source">Camera 0</dd>
+            </div>
+            <div>
+              <dt>Telemetry</dt>
+              <dd id="telemetry-health">Disconnected</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel recommendations-panel">
+          <div class="panel-header compact">
+            <div>
+              <h2>Fatigue Guidance</h2>
+              <p>Live rest guidance updates here when warning or drowsiness is detected.</p>
+            </div>
+          </div>
+          <div class="coach-card">
+            <strong id="coach-title">Monitoring for fatigue</strong>
+            <p id="coach-copy">Once the live feed is connected, this panel will show practical warnings and rest guidance.</p>
+          </div>
+        </section>
+
+        <section class="panel events-panel">
+          <h2>Incident Timeline</h2>
+          <div id="event-log" class="event-log">
+            <div class="event-item neutral">
+              <strong>System boot</strong>
+              <span>Waiting for telemetry.</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
