@@ -10,6 +10,9 @@ This project:
 - shows the processed feed inside the website
 - triggers an alert sound when drowsiness is detected
 
+## Authors
+soumya || parvathi || vishnu
+
 ## Features
 
 - Live face tracking overlay
