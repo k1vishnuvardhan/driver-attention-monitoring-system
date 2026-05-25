@@ -11,7 +11,7 @@ This project:
 - triggers an alert sound when drowsiness is detected
 
 ## Authors
-soumya || parvathi || vishnu
+**soumya** | **parvathi** | **vishnu**
 
 ## Features
 
