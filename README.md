@@ -11,7 +11,12 @@ This project:
 - triggers an alert sound when drowsiness is detected
 
 ## Authors
-**soumya** | **parvathi** | **vishnu**
+
+[![Soumya](https://img.shields.io/badge/GitHub-Soumya-black?logo=github)](https://github.com/soumyapanthangi28)
+
+[![Parvathi](https://img.shields.io/badge/GitHub-Parvathi-black?logo=github)](https://github.com/ParvathiBogati)
+
+[![Vishnu](https://img.shields.io/badge/GitHub-Vishnu-black?logo=github)](https://github.com/k1vishnuvardhan)
 
 ## Features
 
