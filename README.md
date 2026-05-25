@@ -10,6 +10,8 @@ This project:
 - shows the processed feed inside the website
 - triggers an alert sound when drowsiness is detected
 
+---
+
 ## Authors
 
 [![Soumya](https://img.shields.io/badge/GitHub-Soumya-black?logo=github)](https://github.com/soumyapanthangi28)
@@ -17,6 +19,8 @@ This project:
 [![Parvathi](https://img.shields.io/badge/GitHub-Parvathi-black?logo=github)](https://github.com/ParvathiBogati)
 
 [![Vishnu](https://img.shields.io/badge/GitHub-Vishnu-black?logo=github)](https://github.com/k1vishnuvardhan)
+
+---
 
 ## Features
 
@@ -28,12 +32,26 @@ This project:
 - External camera / dashcam-style camera switching
 - Web dashboard with live telemetry
 
+---
+
 ## Requirements
 
 - Windows 10 or Windows 11
 - Python 3.10 or Python 3.11
-- A webcam or supported external USB camera
-- Internet connection for the first dependency install
+- Webcam or external USB camera
+- Internet connection for first-time dependency install
+
+Download Python:
+
+https://www.python.org/downloads/release/python-31011/
+
+IMPORTANT:
+
+During installation enable:
+
+[✓] Add Python to PATH
+
+---
 
 ## Folder Structure
 
@@ -62,31 +80,40 @@ DriverAttentionMonitoring/
 └── README.md
 ```
 
+---
+
 ## Install
 
 Open PowerShell in the project folder and run:
 
 ```powershell
+winget install Python.Python.3.10
+
 python -m venv .venv
 .venv\Scripts\activate
-pip install --upgrade pip
+
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-If `python` does not work on your machine, use:
+If `python` does not work on your machine, restart PowerShell and use:
 
 ```powershell
 py -m venv .venv
 .venv\Scripts\activate
+
 py -m pip install --upgrade pip
 py -m pip install -r requirements.txt
 ```
 
-That is the main dependency install command:
+Recommended:
+- Python 3.10
+- Python 3.11
 
-```powershell
-pip install -r requirements.txt
-```
+Avoid:
+- Python 3.13
+- Python 3.14
+---
 
 ## Run
 
@@ -128,29 +155,30 @@ http://127.0.0.1:5501/ui/index.html
 ```
 
 Then:
-1. Press `Ctrl + F5` once
+1. Press `Ctrl + F5`
 2. Click `Connect Feed`
-3. Make sure your face is visible in the frame
+3. Ensure your face is visible in the frame
+
+---
 
 ## External Camera / Dashcam Use
 
-If you want to use an external USB webcam or a dashcam capture device:
-
-1. Connect the external camera to the computer
+1. Connect the external camera
 2. Start the app
 3. Open the dashboard
 4. Click `Refresh Cameras`
-5. Select the desired camera source
+5. Select the desired camera
 6. Click `Switch Camera`
 
 Notes:
 - `Camera 0` is usually the built-in webcam
-- external cameras often appear as `Camera 1`, `Camera 2`, and so on
-- the device must be visible to Windows as a camera or capture device
+- external cameras may appear as `Camera 1`, `Camera 2`, etc.
+
+---
 
 ## How To Test
 
-### Test 1: Backend telemetry
+### Backend telemetry
 
 Open:
 
@@ -158,15 +186,15 @@ Open:
 http://127.0.0.1:5000/telemetry
 ```
 
-You should see JSON output with values like:
-- `status`
-- `blink_count`
-- `yawn_alerts`
-- `drowsy_alerts`
-- `fps`
-- `camera_name`
+Expected:
+- status
+- blink_count
+- yawn_alerts
+- drowsy_alerts
+- fps
+- camera_name
 
-### Test 2: Video stream
+### Video stream
 
 Open:
 
@@ -174,9 +202,10 @@ Open:
 http://127.0.0.1:5000/video_feed
 ```
 
-You should see the processed video feed with tracking overlays.
+Expected:
+- processed video feed with tracking overlays
 
-### Test 3: Website
+### Website
 
 Open:
 
@@ -184,29 +213,27 @@ Open:
 http://127.0.0.1:5501/ui/index.html
 ```
 
-Expected result:
-- live processed feed appears in the page
-- face tracking status updates
+Expected:
+- live processed feed
+- face tracking updates
 - blink count updates
-- yawn count updates
-- drowsiness alerts update
-- camera source is shown
-- alert sound plays when `DROWSY` state is reached
+- yawn detection updates
+- drowsiness alerts
+- camera source information
+- alert sound when drowsiness is detected
+
+---
 
 ## Controls
 
 ### Dashboard buttons
 
-- `Connect Feed`:
-  connect the website to the backend
-- `Recalibrate`:
-  reset the adaptive eye baseline
-- `Refresh Cameras`:
-  rescan available camera sources
-- `Switch Camera`:
-  switch to the selected camera source
+- `Connect Feed`
+- `Recalibrate`
+- `Refresh Cameras`
+- `Switch Camera`
 
-### Keyboard controls in backend window
+### Keyboard controls
 
 When not running in headless mode:
 
@@ -215,78 +242,81 @@ When not running in headless mode:
 - `O` = save open-eye sample
 - `C` = save closed-eye sample
 
+---
+
 ## Troubleshooting
 
 ### Backend Offline
 
 If the website says `Backend Offline`:
 
-1. Make sure `python src\main.py --headless` is still running
+1. Ensure backend is running
 2. Open:
 
 ```text
 http://127.0.0.1:5000/telemetry
 ```
 
-If this page does not load, the backend is not running correctly.
+If this does not load, the backend failed to start.
+
+---
 
 ### Video stream unavailable
 
-If the site says `Video stream unavailable`:
-
-1. Confirm the backend is running
-2. Hard refresh the browser with `Ctrl + F5`
+1. Confirm backend is running
+2. Hard refresh browser using `Ctrl + F5`
 3. Open:
 
 ```text
 http://127.0.0.1:5000/video_feed
 ```
 
-If that also fails, the backend is not producing frames.
+---
 
 ### No alert sound
 
-Browsers usually require one normal user interaction before audio can play.
+Browsers require user interaction before audio playback.
 
-Do this:
+Do:
 1. Click anywhere on the page
 2. Click `Connect Feed`
 
-After that, when the system enters `DROWSY`, the alert sound should play automatically.
+---
 
 ### Camera not opening
 
-Close other apps that may already be using the camera:
+Close apps already using the camera:
 - Camera app
 - Zoom
 - Teams
-- browser tabs using camera
+- Browser tabs using webcam
+
+---
 
 ### External camera not shown
 
 Try:
-1. unplug the camera
-2. plug it in again
+1. unplug camera
+2. reconnect camera
 3. click `Refresh Cameras`
 4. try another USB port
 
+---
+
 ### Dependency install issues
 
-Re-activate the virtual environment and run:
-
-```powershell
-pip install -r requirements.txt
-```
-
-If needed:
+Re-activate the environment and run:
 
 ```powershell
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+---
+
 ## Notes
 
-- This project is designed for local real-camera use.
+- This project is intended for local real-camera use.
 - The browser dashboard reads the processed stream from the Python backend.
 - The browser does not directly access the camera in this version.
+- Best compatibility is with Python 3.10 or Python 3.11.
